@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="ja">
+	<head>
+		<meta charset="UTF-8" />
+		<title>Canvas2D Scrollbar</title>
+		<style>
+			canvas {
+				border: 1px solid #000;
+			}
+		</style>
+	</head>
+	<body>
+		<canvas id="c1" width="320" height="240"></canvas>
+		<script>
+			async function initCanvasTextView(canvas, textSource, options = {}) {
+				const scrollBarWidth = options.scrollBarWidth ?? 10;
+				const initStart = Date.now();
+				function cursorMag() {
+					const rect = canvas.getBoundingClientRect();
+					return canvas.width / rect.width;
+				}
+				canvas.style.cursor = "wait";
+				canvas.setAttribute("tabindex", 0);
+				let timeoutid = 0;
+				const ctx = canvas.getContext("2d");
+				ctx.font = options.font ?? "12px sans-serif";
+				const lineHeight = options.lineHeight ?? 12;
+				let text = "";
+				if (typeof textSource == "string") {
+					text = textSource;
+				} else if (typeof textSource == "function") {
+					const ac = new AbortController();
+					renderIndeterminateProgress(ac.signal);
+					text = await textSource();
+					ac.abort();
+				}
+				function renderProgress(progress, chars, linecount) {
+					ctx.clearRect(0, 0, canvas.width, canvas.height);
+					ctx.lineWidth = 1;
+					ctx.strokeStyle = "black";
+					ctx.strokeRect(10.5, canvas.height / 2 - 16.5, canvas.width - 20, 32);
+					ctx.fillStyle = "#0080ff";
+					ctx.fillRect(
+						11,
+						canvas.height / 2 - 16,
+						(progress / chars) * (canvas.width - 21.5),
+						31,
+					);
+				}
+				function renderIndeterminateProgress(signal) {
+					ctx.clearRect(0, 0, canvas.width, canvas.height);
+					ctx.fillStyle = "#0080ff";
+					ctx.fillRect(
+						11 +
+							((Date.now() % 1000) / 1000) * ((canvas.width - 22) * 1.5) -
+							(canvas.width - 22) / 2,
+						canvas.height / 2 - 16,
+						(canvas.width - 22) / 2,
+						31,
+					);
+					ctx.lineWidth = 1;
+					ctx.strokeStyle = "black";
+					ctx.strokeRect(10.5, canvas.height / 2 - 16.5, canvas.width - 20, 32);
+					ctx.fillStyle = "white";
+					ctx.fillRect(0, canvas.height / 2 - 17, 10, 32);
+					ctx.fillRect(canvas.width - 9, canvas.height / 2 - 17, 10, 32);
+					if (!signal.aborted) {
+						window.requestAnimationFrame(() =>
+							renderIndeterminateProgress(signal),
+						);
+					}
+				}
+				const lines = [];
+				function renderLines(start, drugging = false, overscroll = false) {
+					ctx.clearRect(0, 0, canvas.width, canvas.height);
+					ctx.fillStyle = "#cccccf";
+					ctx.fillRect(
+						canvas.width - scrollBarWidth,
+						0,
+						canvas.width,
+						canvas.height,
+					);
+					ctx.fillStyle = drugging ? "#88888f" : "#aaaaaf";
+					ctx.fillRect(
+						canvas.width - scrollBarWidth,
+						(start / (lines.length - canvas.height / lineHeight)) *
+							(canvas.height -
+								Math.max(
+									(canvas.height / lineHeight / lines.length) * canvas.height,
+									scrollBarWidth,
+								)),
+						canvas.width,
+						Math.max(
+							(canvas.height / lineHeight / lines.length) * canvas.height,
+							scrollBarWidth,
+						),
+					);
+					if (overscroll) {
+						ctx.fillStyle = "#0018";
+						ctx.beginPath();
+						if (start < 1) {
+							ctx.arc(
+								canvas.width / 2,
+								canvas.width * -1.5,
+								canvas.width * 1.6,
+								90,
+								270,
+							);
+						} else {
+							ctx.arc(
+								canvas.width / 2,
+								canvas.height + canvas.width * 1.5,
+								canvas.width * 1.6,
+								90,
+								270,
+							);
+						}
+						ctx.fill();
+					}
+					ctx.fillStyle = options.color ?? "black";
+
+					for (
+						let i = Math.floor(start);
+						i < lines.length && i < start + canvas.height / lineHeight;
+						i++
+					) {
+						ctx.fillText(
+							lines[i],
+							0,
+							Math.floor((i - start) * lineHeight + lineHeight),
+						);
+					}
+				}
+				async function convertStringToLines() {
+					let offset = 0;
+					let prevst = Date.now();
+					while (true) {
+						let width = 0;
+						let size = 0;
+						while (true) {
+							size++;
+							width = ctx.measureText(text.slice(offset, offset + size)).width;
+							if (
+								width > canvas.width - scrollBarWidth ||
+								offset + size >= text.length ||
+								text[offset + size] == "\n"
+							) {
+								break;
+							}
+						}
+						if (offset + size >= text.length) {
+							lines.push(text.slice(offset).replace("\n", ""));
+							break;
+						} else if (width > canvas.width - scrollBarWidth) {
+							size -= 1;
+						}
+						lines.push(text.slice(offset, offset + size).replace("\n", ""));
+						offset += size;
+						if (Date.now() > prevst + 15) {
+							renderProgress(offset, text.length, lines.length);
+							await new Promise((r) => setTimeout(r, 20));
+							prevst = Date.now();
+						}
+					}
+				}
+				await convertStringToLines();
+				renderLines(0);
+				canvas.style.cursor = "default";
+				let scrollState = {
+					scrolling: 0, // 0=none, 1=body drag, 2=bar drag
+					startX: 0,
+					startY: 0,
+					offset: 0,
+				};
+
+				canvas.addEventListener("pointerdown", function (event) {
+					const rect = canvas.getBoundingClientRect();
+					const x = (event.clientX - rect.left) * cursorMag();
+					const y = (event.clientY - rect.top) * cursorMag();
+					scrollState.scrolling = x > canvas.width - scrollBarWidth - 1 ? 2 : 1;
+					scrollState.startX = x;
+					scrollState.startY = y;
+					if (x > canvas.width - scrollBarWidth - 1) {
+						clearTimeout(timeoutid);
+						renderLines(scrollState.offset, true);
+					} else {
+						canvas.style.cursor = "grabbing";
+					}
+					canvas.setPointerCapture(event.pointerId);
+				});
+
+				canvas.addEventListener("pointermove", function (event) {
+					const { scrolling, startX, startY, offset } = scrollState;
+					const rect = canvas.getBoundingClientRect();
+					const nextx = (event.clientX - rect.left) * cursorMag();
+					const nexty = (event.clientY - rect.top) * cursorMag();
+					if (!scrollState.scrolling) {
+						if (nextx > canvas.width - scrollBarWidth - 1) {
+							canvas.style.cursor = "default";
+						} else {
+							canvas.style.cursor = "grab";
+						}
+						return;
+					}
+
+					// Canvasの位置を取得
+					let newsl = offset + (startY - nexty) / lineHeight;
+					let overscroll = false;
+					if (scrolling == 2) {
+						newsl =
+							(nexty / canvas.height) * lines.length -
+							Math.max(
+								(canvas.height / lineHeight / lines.length) * canvas.height,
+								scrollBarWidth,
+							) /
+								2;
+					}
+					if (newsl > lines.length - canvas.height / lineHeight + 0.5) {
+						newsl = lines.length - canvas.height / lineHeight + 0.5;
+						overscroll = true;
+					}
+					if (newsl < 0) {
+						newsl = 0;
+						overscroll = true;
+					}
+					scrollState.startX = nextx;
+					scrollState.startY = nexty;
+					scrollState.offset = newsl;
+					clearTimeout(timeoutid);
+					renderLines(scrollState.offset, scrolling == 2, overscroll);
+				});
+
+				canvas.addEventListener("pointerup", function (event) {
+					if (
+						(event.clientX - canvas.getBoundingClientRect().left) *
+							cursorMag() >
+						canvas.width - scrollBarWidth - 1
+					) {
+						canvas.style.cursor = "default";
+					} else {
+						canvas.style.cursor = "grab";
+					}
+					clearTimeout(timeoutid);
+					renderLines(scrollState.offset);
+					scrollState.scrolling = 0;
+					canvas.releasePointerCapture(event.pointerId);
+				});
+				canvas.addEventListener("pointercancel", function (event) {
+					if (
+						(event.clientX - canvas.getBoundingClientRect().left) *
+							cursorMag() >
+						canvas.width - scrollBarWidth - 1
+					) {
+						canvas.style.cursor = "default";
+					} else {
+						canvas.style.cursor = "grab";
+					}
+					clearTimeout(timeoutid);
+					renderLines(scrollState.offset);
+					scrollState.scrolling = 0;
+					canvas.releasePointerCapture(event.pointerId);
+				});
+				canvas.addEventListener("touchstart", function (event) {
+					event.preventDefault();
+				});
+
+				canvas.addEventListener("wheel", function (event) {
+					event.preventDefault();
+					let newScroll = scrollState.offset + event.deltaY / 32;
+					let overscroll = false;
+					if (newScroll > lines.length - canvas.height / lineHeight + 0.5) {
+						newScroll = lines.length - canvas.height / lineHeight + 0.5;
+						overscroll = true;
+					}
+					if (newScroll < 0) {
+						newScroll = 0;
+						overscroll = true;
+					}
+					scrollState.offset = newScroll;
+					renderLines(scrollState.offset, false, overscroll);
+					clearTimeout(timeoutid);
+					timeoutid = setTimeout(() => renderLines(scrollState.offset), 300);
+				});
+				canvas.addEventListener("keydown", function (event) {
+					let newScroll =
+						scrollState.offset +
+						(event.key == "ArrowDown"
+							? 1.5
+							: event.key == "ArrowUp"
+								? -1.5
+								: event.key == "PageDown"
+									? canvas.height / lineHeight
+									: event.key == "PageUp"
+										? 0 - canvas.height / lineHeight
+										: event.key == "Home"
+											? -10 - scrollState.offset
+											: event.key == "End"
+												? lines.length
+												: 0);
+					let overscroll = false;
+					if (newScroll > lines.length - canvas.height / lineHeight + 0.5) {
+						newScroll = lines.length - canvas.height / lineHeight + 0.5;
+						overscroll = true;
+					}
+					if (newScroll < 0) {
+						newScroll = 0;
+						overscroll = true;
+					}
+					scrollState.offset = newScroll;
+					renderLines(scrollState.offset, false, overscroll);
+					clearTimeout(timeoutid);
+					timeoutid = setTimeout(() => renderLines(scrollState.offset), 300);
+				});
+				console.log(
+					`initialized CanvasTextView in ${Date.now() - initStart}ms. ${lines.length}lines`,
+					canvas,
+				);
+			}
+			initCanvasTextView(
+				document.getElementById("c1"),
+				async () => {
+					return await (await fetch("https://jsr.io/@bsahd/libcosense/2.1.2/mod.ts")).text();
+				},
+				{ font: "12px monospace" },
+			);
+		</script>
+	</body>
+</html>
