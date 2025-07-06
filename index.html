@@ -11,317 +11,361 @@
 	</head>
 	<body>
 		<canvas id="c1" width="320" height="240"></canvas>
+		<canvas id="c2" width="320" height="240"></canvas>
 		<script>
-			async function initCanvasTextView(canvas, textSource, options = {}) {
-				const scrollBarWidth = options.scrollBarWidth ?? 10;
-				const initStart = Date.now();
-				function cursorMag() {
-					const rect = canvas.getBoundingClientRect();
-					return canvas.width / rect.width;
+			class CanvasTextView {
+				constructor(canvas, options = {}) {
+					this.canvas = canvas;
+					this.options = options;
+					this.scrollBarWidth = options.scrollBarWidth ?? 10;
+					this.lineHeight = options.lineHeight ?? 12;
+					this.font = options.font ?? "12px sans-serif";
+					this.progressBarWidth = options.progressBarWidth ?? 32;
+					this.progressBarPadding = options.progressBarPadding ?? 10;
+					this.ctx = canvas.getContext("2d");
+					this.ctx.font = this.font;
+					this.lines = [];
+					this.timeoutid = 0;
+					this.scrollState = { scrolling: 0, startX: 0, startY: 0, offset: 0 };
+					this.onPointerDown = this.handlePointerDown.bind(this);
+					this.onPointerMove = this.handlePointerMove.bind(this);
+					this.onPointerUpOrCancel = this.handlePointerUpOrCancel.bind(this);
+					this.onTouchStart = (e) => e.preventDefault();
+					this.onWheel = this.handleWheel.bind(this);
+					this.onKeyDown = this.handleKeyDown.bind(this);
+					this.text = "";
+					this.canvas.setAttribute("tabindex", 0);
 				}
-				canvas.style.cursor = "wait";
-				canvas.setAttribute("tabindex", 0);
-				let timeoutid = 0;
-				const ctx = canvas.getContext("2d");
-				ctx.font = options.font ?? "12px sans-serif";
-				const lineHeight = options.lineHeight ?? 12;
-				let text = "";
-				if (typeof textSource == "string") {
-					text = textSource;
-				} else if (typeof textSource == "function") {
-					const ac = new AbortController();
-					renderIndeterminateProgress(ac.signal);
-					text = await textSource();
-					ac.abort();
+
+				cursorMag() {
+					const rect = this.canvas.getBoundingClientRect();
+					return this.canvas.width / rect.width;
 				}
-				function renderProgress(progress, chars, linecount) {
-					ctx.clearRect(0, 0, canvas.width, canvas.height);
-					ctx.lineWidth = 1;
-					ctx.strokeStyle = "black";
-					ctx.strokeRect(10.5, canvas.height / 2 - 16.5, canvas.width - 20, 32);
+
+				async setText(textSource) {
+					this.removeEventListeners();
+					this.canvas.style.cursor = "wait";
+					if (typeof textSource === "string") {
+						this.text = textSource;
+					} else if (typeof textSource === "function") {
+						const ac = new AbortController();
+						this.renderIndeterminateProgress(ac.signal);
+						this.text = await textSource();
+						ac.abort();
+					}
+					await this.convertStringToLines(this.text);
+					this.renderLines(0);
+					this.canvas.style.cursor = "default";
+					this.addEventListeners();
+				}
+
+				addEventListeners() {
+					this.canvas.addEventListener("pointerdown", this.onPointerDown);
+					this.canvas.addEventListener("pointermove", this.onPointerMove);
+					this.canvas.addEventListener("pointerup", this.onPointerUpOrCancel);
+					this.canvas.addEventListener(
+						"pointercancel",
+						this.onPointerUpOrCancel,
+					);
+					this.canvas.addEventListener("touchstart", this.onTouchStart);
+					this.canvas.addEventListener("wheel", this.onWheel);
+					this.canvas.addEventListener("keydown", this.onKeyDown);
+				}
+
+				removeEventListeners() {
+					this.canvas.removeEventListener("pointerdown", this.onPointerDown);
+					this.canvas.removeEventListener("pointermove", this.onPointerMove);
+					this.canvas.removeEventListener(
+						"pointerup",
+						this.onPointerUpOrCancel,
+					);
+					this.canvas.removeEventListener(
+						"pointercancel",
+						this.onPointerUpOrCancel,
+					);
+					this.canvas.removeEventListener("touchstart", this.onTouchStart);
+					this.canvas.removeEventListener("wheel", this.onWheel);
+					this.canvas.removeEventListener("keydown", this.onKeyDown);
+				}
+
+				renderIndeterminateProgress(signal) {
+					const ctx = this.ctx;
+					const w = this.canvas.width;
+					const h = this.canvas.height;
+					ctx.clearRect(0, 0, w, h);
 					ctx.fillStyle = "#0080ff";
 					ctx.fillRect(
-						11,
-						canvas.height / 2 - 16,
-						(progress / chars) * (canvas.width - 21.5),
+						this.progressBarPadding +
+							1 +
+							((Date.now() % 1000) / 1000) *
+								((w - (this.progressBarPadding + 1) * 2) * 1.5) -
+							(w - (this.progressBarPadding + 1) * 2) / 2,
+						h / 2 - 16,
+						(w - (this.progressBarPadding + 1) * 2) / 2,
 						31,
 					);
-				}
-				function renderIndeterminateProgress(signal) {
-					ctx.clearRect(0, 0, canvas.width, canvas.height);
-					ctx.fillStyle = "#0080ff";
-					ctx.fillRect(
-						11 +
-							((Date.now() % 1000) / 1000) * ((canvas.width - 22) * 1.5) -
-							(canvas.width - 22) / 2,
-						canvas.height / 2 - 16,
-						(canvas.width - 22) / 2,
-						31,
-					);
-					ctx.lineWidth = 1;
 					ctx.strokeStyle = "black";
-					ctx.strokeRect(10.5, canvas.height / 2 - 16.5, canvas.width - 20, 32);
+					ctx.lineWidth = 1;
+					ctx.strokeRect(
+						this.progressBarPadding + 0.5,
+						h / 2 - 16.5,
+						w - this.progressBarPadding * 2,
+						this.progressBarWidth,
+					);
 					ctx.fillStyle = "white";
-					ctx.fillRect(0, canvas.height / 2 - 17, 10, 32);
-					ctx.fillRect(canvas.width - 9, canvas.height / 2 - 17, 10, 32);
+					ctx.fillRect(0, h / 2 - 17, 10, this.progressBarWidth);
+					ctx.fillRect(w - 9, h / 2 - 17, 10, this.progressBarWidth);
 					if (!signal.aborted) {
-						window.requestAnimationFrame(() =>
-							renderIndeterminateProgress(signal),
+						requestAnimationFrame(() =>
+							this.renderIndeterminateProgress(signal),
 						);
 					}
 				}
-				const lines = [];
-				function renderLines(start, drugging = false, overscroll = false) {
-					ctx.clearRect(0, 0, canvas.width, canvas.height);
+				renderProgress(progress) {
+					const ctx = this.ctx;
+					const w = this.canvas.width;
+					const h = this.canvas.height;
+					ctx.strokeStyle = "black";
+					ctx.lineWidth = 1;
+					ctx.strokeRect(
+						this.progressBarPadding + 0.5,
+						h / 2 - 16.5,
+						w - this.progressBarPadding * 2,
+						this.progressBarWidth,
+					);
+					ctx.fillStyle = "#0080ff";
+					ctx.fillRect(
+						this.progressBarPadding + 1,
+						h / 2 - 16,
+						progress * (w - this.progressBarPadding * 2),
+						this.progressBarWidth - 1,
+					);
+				}
+
+				renderLines(start, drugging = false, overscroll = false) {
+					const ctx = this.ctx;
+					const { width: w, height: h } = this.canvas;
+					const sbw = this.scrollBarWidth;
+					const lh = this.lineHeight;
+					ctx.clearRect(0, 0, w, h);
+
+					// スクロールバー背景
 					ctx.fillStyle = "#cccccf";
-					ctx.fillRect(
-						canvas.width - scrollBarWidth,
-						0,
-						canvas.width,
-						canvas.height,
+					ctx.fillRect(w - sbw, 0, sbw, h);
+
+					// スクロールバー本体
+					const visibleLines = h / lh;
+					const scrollbarHeight = Math.max(
+						(visibleLines / this.lines.length) * h,
+						sbw,
 					);
+					const scrollbarTop =
+						(start / (this.lines.length - visibleLines)) *
+						(h - scrollbarHeight);
+
 					ctx.fillStyle = drugging ? "#88888f" : "#aaaaaf";
-					ctx.fillRect(
-						canvas.width - scrollBarWidth,
-						(start / (lines.length - canvas.height / lineHeight)) *
-							(canvas.height -
-								Math.max(
-									(canvas.height / lineHeight / lines.length) * canvas.height,
-									scrollBarWidth,
-								)),
-						canvas.width,
-						Math.max(
-							(canvas.height / lineHeight / lines.length) * canvas.height,
-							scrollBarWidth,
-						),
-					);
+					ctx.fillRect(w - sbw, scrollbarTop, sbw, scrollbarHeight);
+
+					// オーバースクロール表示
 					if (overscroll) {
 						ctx.fillStyle = "#0018";
 						ctx.beginPath();
 						if (start < 1) {
-							ctx.arc(
-								canvas.width / 2,
-								canvas.width * -1.5,
-								canvas.width * 1.6,
-								90,
-								270,
-							);
+							ctx.arc(w / 2, w * -1.5, w * 1.6, 90, 270);
 						} else {
-							ctx.arc(
-								canvas.width / 2,
-								canvas.height + canvas.width * 1.5,
-								canvas.width * 1.6,
-								90,
-								270,
-							);
+							ctx.arc(w / 2, h + w * 1.5, w * 1.6, 90, 270);
 						}
 						ctx.fill();
 					}
-					ctx.fillStyle = options.color ?? "black";
 
+					ctx.fillStyle = this.options.color ?? "black";
 					for (
 						let i = Math.floor(start);
-						i < lines.length && i < start + canvas.height / lineHeight;
+						i < this.lines.length && i < start + visibleLines;
 						i++
 					) {
-						ctx.fillText(
-							lines[i],
-							0,
-							Math.floor((i - start) * lineHeight + lineHeight),
-						);
+						ctx.fillText(this.lines[i], 0, Math.floor((i - start) * lh + lh));
 					}
 				}
-				async function convertStringToLines() {
+
+				async convertStringToLines(text) {
+					const ctx = this.ctx;
+					const sbw = this.scrollBarWidth;
 					let offset = 0;
-					let prevst = Date.now();
-					while (true) {
+					let prev = Date.now();
+					while (offset < text.length) {
 						let width = 0;
 						let size = 0;
 						while (true) {
 							size++;
 							width = ctx.measureText(text.slice(offset, offset + size)).width;
 							if (
-								width > canvas.width - scrollBarWidth ||
+								width > this.canvas.width - sbw ||
 								offset + size >= text.length ||
-								text[offset + size] == "\n"
+								text[offset + size] === "\n"
 							) {
 								break;
 							}
 						}
-						if (offset + size >= text.length) {
-							lines.push(text.slice(offset).replace("\n", ""));
-							break;
-						} else if (width > canvas.width - scrollBarWidth) {
-							size -= 1;
-						}
-						lines.push(text.slice(offset, offset + size).replace("\n", ""));
+						if (width > this.canvas.width - sbw) size--;
+						this.lines.push(
+							text.slice(offset, offset + size).replace("\n", ""),
+						);
 						offset += size;
-						if (Date.now() > prevst + 15) {
-							renderProgress(offset, text.length, lines.length);
+
+						if (Date.now() - prev > 15) {
+							this.renderProgress(offset / text.length);
 							await new Promise((r) => setTimeout(r, 20));
-							prevst = Date.now();
+							prev = Date.now();
 						}
 					}
 				}
-				await convertStringToLines();
-				renderLines(0);
-				canvas.style.cursor = "default";
-				let scrollState = {
-					scrolling: 0, // 0=none, 1=body drag, 2=bar drag
-					startX: 0,
-					startY: 0,
-					offset: 0,
-				};
 
-				canvas.addEventListener("pointerdown", function (event) {
-					const rect = canvas.getBoundingClientRect();
-					const x = (event.clientX - rect.left) * cursorMag();
-					const y = (event.clientY - rect.top) * cursorMag();
-					scrollState.scrolling = x > canvas.width - scrollBarWidth - 1 ? 2 : 1;
-					scrollState.startX = x;
-					scrollState.startY = y;
-					if (x > canvas.width - scrollBarWidth - 1) {
-						clearTimeout(timeoutid);
-						renderLines(scrollState.offset, true);
-					} else {
-						canvas.style.cursor = "grabbing";
+				handlePointerDown(e) {
+					const mag = this.cursorMag();
+					const rect = this.canvas.getBoundingClientRect();
+					const x = (e.clientX - rect.left) * mag;
+					const y = (e.clientY - rect.top) * mag;
+					this.scrollState.scrolling =
+						x > this.canvas.width - this.scrollBarWidth - 1 ? 2 : 1;
+					this.scrollState.startX = x;
+					this.scrollState.startY = y;
+					this.canvas.setPointerCapture(e.pointerId);
+					if (x > this.canvas.width - this.scrollBarWidth - 1) {
+						this.renderLines(this.scrollState.offset, true);
 					}
-					canvas.setPointerCapture(event.pointerId);
-				});
+				}
 
-				canvas.addEventListener("pointermove", function (event) {
-					const { scrolling, startX, startY, offset } = scrollState;
-					const rect = canvas.getBoundingClientRect();
-					const nextx = (event.clientX - rect.left) * cursorMag();
-					const nexty = (event.clientY - rect.top) * cursorMag();
-					if (!scrollState.scrolling) {
-						if (nextx > canvas.width - scrollBarWidth - 1) {
-							canvas.style.cursor = "default";
-						} else {
-							canvas.style.cursor = "grab";
-						}
+				handlePointerMove(e) {
+					const { scrolling, startY, offset } = this.scrollState;
+					if (!scrolling) {
+						const x =
+							(e.clientX - this.canvas.getBoundingClientRect().left) *
+							this.cursorMag();
+						this.canvas.style.cursor =
+							x > this.canvas.width - this.scrollBarWidth - 1
+								? "default"
+								: "grab";
 						return;
 					}
+					const y =
+						(e.clientY - this.canvas.getBoundingClientRect().top) *
+						this.cursorMag();
+					let newOffset =
+						scrolling === 2
+							? (y / this.canvas.height) * this.lines.length -
+								Math.max(
+									(this.canvas.height / this.lineHeight / this.lines.length) *
+										this.canvas.height,
+									this.scrollBarWidth,
+								) /
+									2
+							: offset + (startY - y) / this.lineHeight;
 
-					// Canvasの位置を取得
-					let newsl = offset + (startY - nexty) / lineHeight;
 					let overscroll = false;
-					if (scrolling == 2) {
-						newsl =
-							(nexty / canvas.height) * lines.length -
-							Math.max(
-								(canvas.height / lineHeight / lines.length) * canvas.height,
-								scrollBarWidth,
-							) /
-								2;
-					}
-					if (newsl > lines.length - canvas.height / lineHeight + 0.5) {
-						newsl = lines.length - canvas.height / lineHeight + 0.5;
+					const maxOffset =
+						this.lines.length - this.canvas.height / this.lineHeight + 0.5;
+					if (newOffset > maxOffset) {
+						newOffset = maxOffset;
 						overscroll = true;
 					}
-					if (newsl < 0) {
-						newsl = 0;
+					if (newOffset < 0) {
+						newOffset = 0;
 						overscroll = true;
 					}
-					scrollState.startX = nextx;
-					scrollState.startY = nexty;
-					scrollState.offset = newsl;
-					clearTimeout(timeoutid);
-					renderLines(scrollState.offset, scrolling == 2, overscroll);
-				});
+					this.scrollState.startY = y;
+					this.scrollState.offset = newOffset;
+					clearTimeout(this.timeoutid);
+					this.renderLines(newOffset, scrolling === 2, overscroll);
+				}
 
-				canvas.addEventListener("pointerup", function (event) {
-					if (
-						(event.clientX - canvas.getBoundingClientRect().left) *
-							cursorMag() >
-						canvas.width - scrollBarWidth - 1
-					) {
-						canvas.style.cursor = "default";
-					} else {
-						canvas.style.cursor = "grab";
-					}
-					clearTimeout(timeoutid);
-					renderLines(scrollState.offset);
-					scrollState.scrolling = 0;
-					canvas.releasePointerCapture(event.pointerId);
-				});
-				canvas.addEventListener("pointercancel", function (event) {
-					if (
-						(event.clientX - canvas.getBoundingClientRect().left) *
-							cursorMag() >
-						canvas.width - scrollBarWidth - 1
-					) {
-						canvas.style.cursor = "default";
-					} else {
-						canvas.style.cursor = "grab";
-					}
-					clearTimeout(timeoutid);
-					renderLines(scrollState.offset);
-					scrollState.scrolling = 0;
-					canvas.releasePointerCapture(event.pointerId);
-				});
-				canvas.addEventListener("touchstart", function (event) {
-					event.preventDefault();
-				});
+				handlePointerUpOrCancel(e) {
+					const x =
+						(e.clientX - this.canvas.getBoundingClientRect().left) *
+						this.cursorMag();
+					this.canvas.style.cursor =
+						x > this.canvas.width - this.scrollBarWidth - 1
+							? "default"
+							: "grab";
+					clearTimeout(this.timeoutid);
+					this.renderLines(this.scrollState.offset);
+					this.scrollState.scrolling = 0;
+					this.canvas.releasePointerCapture(e.pointerId);
+				}
 
-				canvas.addEventListener("wheel", function (event) {
-					event.preventDefault();
-					let newScroll = scrollState.offset + event.deltaY / 32;
+				handleWheel(e) {
+					e.preventDefault();
+					let newOffset = this.scrollState.offset + e.deltaY / 32;
 					let overscroll = false;
-					if (newScroll > lines.length - canvas.height / lineHeight + 0.5) {
-						newScroll = lines.length - canvas.height / lineHeight + 0.5;
+					const maxOffset =
+						this.lines.length - this.canvas.height / this.lineHeight + 0.5;
+					if (newOffset > maxOffset) {
+						newOffset = maxOffset;
 						overscroll = true;
 					}
-					if (newScroll < 0) {
-						newScroll = 0;
+					if (newOffset < 0) {
+						newOffset = 0;
 						overscroll = true;
 					}
-					scrollState.offset = newScroll;
-					renderLines(scrollState.offset, false, overscroll);
-					clearTimeout(timeoutid);
-					timeoutid = setTimeout(() => renderLines(scrollState.offset), 300);
-				});
-				canvas.addEventListener("keydown", function (event) {
-					let newScroll =
-						scrollState.offset +
-						(event.key == "ArrowDown"
+					this.scrollState.offset = newOffset;
+					this.renderLines(newOffset, false, overscroll);
+					clearTimeout(this.timeoutid);
+					this.timeoutid = setTimeout(
+						() => this.renderLines(this.scrollState.offset),
+						300,
+					);
+				}
+
+				handleKeyDown(e) {
+					const delta =
+						e.key === "ArrowDown"
 							? 1.5
-							: event.key == "ArrowUp"
+							: e.key === "ArrowUp"
 								? -1.5
-								: event.key == "PageDown"
-									? canvas.height / lineHeight
-									: event.key == "PageUp"
-										? 0 - canvas.height / lineHeight
-										: event.key == "Home"
-											? -10 - scrollState.offset
-											: event.key == "End"
-												? lines.length
-												: 0);
+								: e.key === "PageDown"
+									? this.canvas.height / this.lineHeight
+									: e.key === "PageUp"
+										? -this.canvas.height / this.lineHeight
+										: e.key === "Home"
+											? -10 - this.scrollState.offset
+											: e.key === "End"
+												? this.lines.length
+												: 0;
+
+					let newOffset = this.scrollState.offset + delta;
 					let overscroll = false;
-					if (newScroll > lines.length - canvas.height / lineHeight + 0.5) {
-						newScroll = lines.length - canvas.height / lineHeight + 0.5;
+					const maxOffset =
+						this.lines.length - this.canvas.height / this.lineHeight + 0.5;
+					if (newOffset > maxOffset) {
+						newOffset = maxOffset;
 						overscroll = true;
 					}
-					if (newScroll < 0) {
-						newScroll = 0;
+					if (newOffset < 0) {
+						newOffset = 0;
 						overscroll = true;
 					}
-					scrollState.offset = newScroll;
-					renderLines(scrollState.offset, false, overscroll);
-					clearTimeout(timeoutid);
-					timeoutid = setTimeout(() => renderLines(scrollState.offset), 300);
-				});
-				console.log(
-					`initialized CanvasTextView in ${Date.now() - initStart}ms. ${lines.length}lines`,
-					canvas,
-				);
+					this.scrollState.offset = newOffset;
+					this.renderLines(newOffset, false, overscroll);
+					clearTimeout(this.timeoutid);
+					this.timeoutid = setTimeout(
+						() => this.renderLines(this.scrollState.offset),
+						300,
+					);
+				}
 			}
-			initCanvasTextView(
-				document.getElementById("c1"),
-				async () => {
-					return await (await fetch("index.html")).text();
-				},
-				{ font: "12px monospace" },
+
+			// 初期化
+			const view = new CanvasTextView(document.getElementById("c1"), {
+				font: "12px monospace",
+			});
+			view.setText(() => fetch("index.html").then((res) => res.text()));
+			const view2 = new CanvasTextView(document.getElementById("c2"), {
+				font: "12px monospace",
+			});
+			view2.setText(
+				`Lorem ipsum dolor sit amet, consectetur adipisci elit, sed eiusmod tempor incidunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrum exercitationem ullam corporis suscipit laboriosam, nisi ut aliquid ex ea commodi consequatur. Quis aute iure reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint obcaecat cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.`.repeat(
+					256,
+				),
 			);
 		</script>
 	</body>
